@@ -365,10 +365,9 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         datefirst = options.get('datefirst', 7)
         cursor.execute('SET DATEFORMAT ymd; SET DATEFIRST %s' % datefirst)
 
-        val = self.get_system_datetime()
-        if isinstance(val, str):
+        if not self.has_modern_datetime_types_support:
             raise ImproperlyConfigured(
-                "The database driver doesn't support modern datatime types.")
+                "The database driver doesn't support modern datetime types.")
 
     def is_usable(self):
         try:
@@ -377,6 +376,10 @@ class DatabaseWrapper(BaseDatabaseWrapper):
             return False
         else:
             return True
+
+    @cached_property
+    def has_modern_datetime_types_support(self):
+        return not isinstance(self.get_system_datetime(), str)
 
     def get_system_datetime(self):
         # http://blogs.msdn.com/b/sqlnativeclient/archive/2008/02/27/microsoft-sql-server-native-client-and-microsoft-sql-server-2008-native-client.aspx
