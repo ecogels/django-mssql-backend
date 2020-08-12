@@ -1,9 +1,13 @@
 import datetime
 import uuid
 import warnings
+import django
 
 from django.conf import settings
 from django.db.backends.base.operations import BaseDatabaseOperations
+from django.db.models import Exists, ExpressionWrapper
+from django.db.models.expressions import RawSQL
+from django.db.models.sql.where import WhereNode
 from django.utils import timezone
 from django.utils.encoding import force_str
 
@@ -440,3 +444,19 @@ class DatabaseOperations(BaseDatabaseOperations):
         elif lookup_type == 'second':
             sql = "CONVERT(time, SUBSTRING(CONVERT(varchar, %s, 114), 0, 9))" % field_name
         return sql
+
+    def conditional_expression_supported_in_where_clause(self, expression):
+        """
+        Copied from Oracle backend https://github.com/django/django/blob/e74b3d724e5ddfef96d1d66bd1c58e7aae26fc85/django/db/backends/oracle/operations.py#L634
+        Following "Moved conditional expression wrapping to the Exact lookup" in django 3.1
+        https://github.com/django/django/commit/37e6c5b79bd0529a3c85b8c478e4002fd33a2a1d
+        """
+        if django.VERSION >= (3, 1):
+            if isinstance(expression, (Exists, WhereNode)):
+                return True
+            if isinstance(expression, ExpressionWrapper) and expression.conditional:
+                return self.conditional_expression_supported_in_where_clause(expression.expression)
+            if isinstance(expression, RawSQL) and expression.conditional:
+                return True
+            return False
+        return True
