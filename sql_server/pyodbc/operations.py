@@ -314,70 +314,32 @@ class DatabaseOperations(BaseDatabaseOperations):
         """
         return "ROLLBACK TRANSACTION %s" % sid
 
-    def sql_flush(self, style, tables, sequences, allow_cascade=False):
-        """
-        Returns a list of SQL statements required to remove all data from
-        the given database tables (without actually removing the tables
-        themselves).
-
-        The returned value also includes SQL statements required to reset DB
-        sequences passed in :param sequences:.
-
-        The `style` argument is a Style object as returned by either
-        color_style() or no_style() in django.core.management.color.
-
-        The `allow_cascade` argument determines whether truncation may cascade
-        to tables with foreign keys pointing the tables being truncated.
-        """
-        if tables:
-            # Cannot use TRUNCATE on tables that are referenced by a FOREIGN KEY
-            # So must use the much slower DELETE
-            from django.db import connections
-            cursor = connections[self.connection.alias].cursor()
-            # Try to minimize the risks of the braindeaded inconsistency in
-            # DBCC CHEKIDENT(table, RESEED, n) behavior.
-            seqs = []
-            for seq in sequences:
-                cursor.execute("SELECT COUNT(*) FROM %s" % self.quote_name(seq["table"]))
-                rowcnt = cursor.fetchone()[0]
-                elem = {}
-                if rowcnt:
-                    elem['start_id'] = 0
-                else:
-                    elem['start_id'] = 1
-                elem.update(seq)
-                seqs.append(elem)
-            COLUMNS = "TABLE_NAME, CONSTRAINT_NAME"
-            WHERE = "CONSTRAINT_TYPE not in ('PRIMARY KEY','UNIQUE')"
-            cursor.execute(
-                "SELECT {} FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE {}".format(COLUMNS, WHERE))
-            fks = cursor.fetchall()
-            sql_list = ['ALTER TABLE %s NOCHECK CONSTRAINT %s;' %
-                        (self.quote_name(fk[0]), self.quote_name(fk[1])) for fk in fks]
-            sql_list.extend(['%s %s %s;' % (style.SQL_KEYWORD('DELETE'), style.SQL_KEYWORD('FROM'),
-                                            style.SQL_FIELD(self.quote_name(table))) for table in tables])
-
-            if self.connection.to_azure_sql_db and self.connection.sql_server_version < 2014:
-                warnings.warn("Resetting identity columns is not supported "
-                              "on this versios of Azure SQL Database.",
-                              RuntimeWarning)
-            else:
-                # Then reset the counters on each table.
-                sql_list.extend(['%s %s (%s, %s, %s) %s %s;' % (
-                    style.SQL_KEYWORD('DBCC'),
-                    style.SQL_KEYWORD('CHECKIDENT'),
-                    style.SQL_FIELD(self.quote_name(seq["table"])),
-                    style.SQL_KEYWORD('RESEED'),
-                    style.SQL_FIELD('%d' % seq['start_id']),
-                    style.SQL_KEYWORD('WITH'),
-                    style.SQL_KEYWORD('NO_INFOMSGS'),
-                ) for seq in seqs])
-
-            sql_list.extend(['ALTER TABLE %s CHECK CONSTRAINT %s;' %
-                             (self.quote_name(fk[0]), self.quote_name(fk[1])) for fk in fks])
-            return sql_list
-        else:
+    def sql_flush(self, style, tables, *, reset_sequences=False, allow_cascade=False):
+        if not tables:
             return []
+
+        sql = [f'ALTER TABLE {table} NOCHECK CONSTRAINT ALL' for table in tables]
+        if reset_sequences:
+            # It's faster to TRUNCATE tables that require a sequence reset
+            # since ALTER TABLE AUTO_INCREMENT is slower than TRUNCATE.
+            sql.extend(
+                '%s %s;' % (
+                    style.SQL_KEYWORD('TRUNCATE'),
+                    style.SQL_FIELD(self.quote_name(table_name)),
+                ) for table_name in tables
+            )
+        else:
+            # Otherwise issue a simple DELETE since it's faster than TRUNCATE
+            # and preserves sequences.
+            sql.extend(
+                '%s %s %s;' % (
+                    style.SQL_KEYWORD('DELETE'),
+                    style.SQL_KEYWORD('FROM'),
+                    style.SQL_FIELD(self.quote_name(table_name)),
+                ) for table_name in tables
+            )
+        sql += [f'ALTER TABLE {table} WITH CHECK CHECK CONSTRAINT ALL' for table in tables]
+        return sql
 
     def start_transaction_sql(self):
         """
